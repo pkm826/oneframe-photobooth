@@ -365,37 +365,31 @@
         return;
       }
       
-      // ==================== WEBRTC SETUP ====================
+      // ==================== WEBRTC SETUP - FINAL FIX ====================
       function createPeerConnection(shouldCreateOffer = false) {
         if (peerConnection) {
           peerConnection.close();
           peerConnection = null;
         }
         
-        log(`🔧 Creating RTCPeerConnection (${shouldCreateOffer ? 'will create offer' : 'will wait for offer'})...`);
+        log('🔧 Creating peer connection with TCP-only TURN...');
         
-        // STUN + TURN servers for cross-network connections
+        // SIMPLE CONFIGURATION - TCP ONLY, RELAY ONLY
         const configuration = {
           iceServers: [
-            // ONLY USE THESE - THEY WORK!
             {
               urls: 'turn:turn.anyfirewall.com:443?transport=tcp',
               username: 'webrtc',
               credential: 'webrtc'
-            },
-            {
-              urls: 'turn:turn2.anyfirewall.com:443?transport=tcp', 
-              username: 'webrtc',
-              credential: 'webrtc'
             }
           ],
-          iceTransportPolicy: 'relay',  // 🔴 THIS IS THE MAGIC
+          iceTransportPolicy: 'relay',
           iceCandidatePoolSize: 10
         };
         
         peerConnection = new RTCPeerConnection(configuration);
         
-        // Add local video tracks
+        // Add local stream
         if (localStream) {
           localStream.getTracks().forEach(track => {
             peerConnection.addTrack(track, localStream);
@@ -403,31 +397,26 @@
           });
         }
         
-        // Handle incoming video
+        // Handle remote stream
         peerConnection.ontrack = (event) => {
-          log('✅ ONTRACK: Received remote video stream!');
-          
+          log('✅ ONTRACK: Received remote video!');
           if (event.streams && event.streams[0]) {
             remoteVideo.srcObject = event.streams[0];
             remoteVideo.play()
               .then(() => {
-                log('✅ Remote video is playing!');
+                log('✅ Remote video playing!');
                 isConnected = true;
                 status.innerText = '💘 Connected! Ready to take photos!';
                 photoBtn.disabled = false;
               })
-              .catch(e => log(`⚠️ Remote video play error: ${e.message}`));
+              .catch(e => log(`⚠️ Play error: ${e.message}`));
           }
         };
         
-        // Handle ICE candidates
+        // ICE candidates - ONLY send relay candidates
         peerConnection.onicecandidate = (event) => {
-          if (event.candidate) {
-            // Log candidate type
-            if (event.candidate.candidate.includes('relay')) {
-              log('📡 Sending TURN relay candidate');
-            }
-            
+          if (event.candidate && event.candidate.candidate.includes('relay')) {
+            log('📡 Sending TURN relay candidate');
             socket.emit('signal', {
               roomId: roomId,
               signal: {
@@ -438,36 +427,39 @@
           }
         };
         
-        // Monitor connection state
+        // Monitor ICE state
         peerConnection.oniceconnectionstatechange = () => {
           const state = peerConnection.iceConnectionState;
           log(`🔄 ICE state: ${state}`);
           
           if (state === 'connected' || state === 'completed') {
+            log('✅ WebRTC connected via TURN relay!');
             isConnected = true;
             photoBtn.disabled = false;
-            status.innerText = '💘 Connected!';
+            status.innerText = '💘 Connected! Ready to take photos!';
           } else if (state === 'failed') {
-            log('❌ ICE connection failed - trying to restart...');
-            peerConnection.restartIce();
+            log('❌ ICE failed - retrying...');
+            status.innerText = '⚠️ Connection failed. Retrying...';
+            setTimeout(() => {
+              if (peerConnection) {
+                peerConnection.restartIce();
+              }
+            }, 3000);
           } else if (state === 'disconnected') {
             log('⚠️ ICE disconnected');
           }
         };
         
+        // Monitor gathering state
         peerConnection.onicegatheringstatechange = () => {
           log(`🔄 ICE gathering: ${peerConnection.iceGatheringState}`);
         };
         
-        peerConnection.onconnectionstatechange = () => {
-          log(`🔄 Connection state: ${peerConnection.connectionState}`);
-        };
-        
-        // Create offer if we're the initiator
+        // Create offer if initiator
         if (shouldCreateOffer) {
           setTimeout(async () => {
             try {
-              log('📞 Creating offer...');
+              log('📞 Creating offer with TURN forcing...');
               const offer = await peerConnection.createOffer({
                 offerToReceiveVideo: true,
                 offerToReceiveAudio: false
@@ -479,7 +471,7 @@
                 roomId: roomId,
                 signal: peerConnection.localDescription
               });
-              log('📞 Offer sent!');
+              log('📞 Offer sent');
             } catch (err) {
               log(`❌ Offer error: ${err.message}`);
             }
