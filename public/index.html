@@ -161,30 +161,6 @@
       font-size: 1.1em;
       margin: 10px 0;
     }
-
-    .tap-message {
-      position: fixed;
-      top: 50%;
-      left: 50%;
-      transform: translate(-50%, -50%);
-      background: rgba(255,77,109,0.95);
-      color: white;
-      padding: 20px 40px;
-      border-radius: 50px;
-      font-size: 1.5em;
-      font-weight: bold;
-      border: 3px solid white;
-      box-shadow: 0 10px 30px rgba(0,0,0,0.5);
-      z-index: 1000;
-      animation: pulse 2s infinite;
-      cursor: pointer;
-    }
-
-    @keyframes pulse {
-      0% { transform: translate(-50%, -50%) scale(1); }
-      50% { transform: translate(-50%, -50%) scale(1.05); }
-      100% { transform: translate(-50%, -50%) scale(1); }
-    }
   </style>
 </head>
 <body>
@@ -210,10 +186,6 @@
         <video id="remoteVideo" autoplay playsinline muted></video>
         <div class="label">💝 Partner</div>
       </div>
-    </div>
-    
-    <div id="tapOverlay" style="display: none;" class="tap-message">
-      👆 TAP TO START VIDEO
     </div>
     
     <div>
@@ -249,7 +221,6 @@
       const stripContainer = document.getElementById('stripContainer');
       const debugPanel = document.getElementById('debugPanel');
       const debugBtn = document.getElementById('debugBtn');
-      const tapOverlay = document.getElementById('tapOverlay');
       
       // State
       let localStream = null;
@@ -258,7 +229,6 @@
       let photos = [];
       let debugMode = false;
       let isInitiator = false;
-      let remoteStreamReceived = false;
       
       // ==================== DEBUG LOGGING ====================
       function log(...args) {
@@ -301,7 +271,7 @@
       
       socket.on('role', (role) => {
         isInitiator = role === 'initiator';
-        log(`🎮 My role: ${role} (${isInitiator ? '📤 will send offer' : '📥 will wait for offer'})`);
+        log(`🎮 My role: ${role}`);
       });
       
       socket.on('user-count', (count) => {
@@ -324,11 +294,9 @@
       socket.on('partner-left', () => {
         log('👋 Partner left the room');
         isConnected = false;
-        remoteStreamReceived = false;
         status.innerText = '👋 Partner left. Waiting for new partner...';
         photoBtn.disabled = true;
         remoteVideo.srcObject = null;
-        tapOverlay.style.display = 'none';
         
         if (peerConnection) {
           peerConnection.close();
@@ -397,42 +365,36 @@
         return;
       }
       
-      // ==================== TAP TO PLAY HANDLER ====================
-      function startRemoteVideo() {
-        if (remoteVideo.srcObject) {
-          remoteVideo.play()
-            .then(() => {
-              log('✅ Remote video started by user tap');
-              tapOverlay.style.display = 'none';
-              isConnected = true;
-              status.innerText = '💘 Connected! Ready to take photos!';
-              photoBtn.disabled = false;
-            })
-            .catch(e => log(`⚠️ Tap play error: ${e.message}`));
-        }
-      }
-
-      tapOverlay.addEventListener('click', startRemoteVideo);
-      tapOverlay.addEventListener('touchstart', startRemoteVideo);
-      
-      // ==================== WEBRTC SETUP ====================
+      // ==================== WEBRTC SETUP - FINAL VERSION ====================
       function createPeerConnection(shouldCreateOffer = false) {
         if (peerConnection) {
           peerConnection.close();
           peerConnection = null;
         }
         
-        log('🔧 Creating peer connection with TURN...');
+        log('🔧 Creating peer connection...');
         
+        // MULTIPLE TURN SERVERS for redundancy
         const configuration = {
           iceServers: [
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:stun1.l.google.com:19302' },
+            {
+              urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+              username: 'openrelayproject',
+              credential: 'openrelayproject'
+            },
+            {
+              urls: 'turn:openrelay.metered.ca:443',
+              username: 'openrelayproject',
+              credential: 'openrelayproject'
+            },
             {
               urls: 'turn:turn.anyfirewall.com:443?transport=tcp',
               username: 'webrtc',
               credential: 'webrtc'
             }
           ],
-          iceTransportPolicy: 'relay',
           iceCandidatePoolSize: 10
         };
         
@@ -449,32 +411,24 @@
         // Handle remote stream
         peerConnection.ontrack = (event) => {
           log('✅ ONTRACK: Received remote video!');
-          remoteStreamReceived = true;
-          
           if (event.streams && event.streams[0]) {
             remoteVideo.srcObject = event.streams[0];
-            
-            // Try to play immediately
+            // Force play with mute for Safari
+            remoteVideo.muted = true;
             remoteVideo.play()
               .then(() => {
-                log('✅ Remote video playing immediately!');
+                log('✅ Remote video playing!');
                 isConnected = true;
                 status.innerText = '💘 Connected! Ready to take photos!';
                 photoBtn.disabled = false;
               })
-              .catch(() => {
-                // Show tap overlay for Safari/iPhone
-                log('⚠️ Autoplay blocked - showing tap overlay');
-                status.innerText = '👆 Tap to start video';
-                tapOverlay.style.display = 'block';
-              });
+              .catch(e => log(`⚠️ Play error: ${e.message}`));
           }
         };
         
-        // ICE candidates - ONLY send relay candidates
+        // ICE candidates
         peerConnection.onicecandidate = (event) => {
-          if (event.candidate && event.candidate.candidate.includes('relay')) {
-            log('📡 Sending TURN relay candidate');
+          if (event.candidate) {
             socket.emit('signal', {
               roomId: roomId,
               signal: {
@@ -491,19 +445,19 @@
           log(`🔄 ICE state: ${state}`);
           
           if (state === 'connected' || state === 'completed') {
-            log('✅ WebRTC connected via TURN relay!');
-            if (!remoteStreamReceived) {
-              status.innerText = '⏳ Waiting for video stream...';
-            }
+            log('✅ WebRTC connected!');
+            isConnected = true;
+            photoBtn.disabled = false;
+            status.innerText = '💘 Connected! Ready to take photos!';
           } else if (state === 'failed') {
-            log('❌ ICE failed - retrying...');
+            log('❌ ICE failed - trying next TURN server...');
             status.innerText = '⚠️ Connection failed. Retrying...';
-            setTimeout(() => {
-              if (peerConnection) {
-                peerConnection.restartIce();
-              }
-            }, 3000);
           }
+        };
+
+        // ICE candidate errors
+        peerConnection.onicecandidateerror = (event) => {
+          log(`❌ TURN server error: ${event.errorText || 'Unknown'}`);
         };
         
         // Create offer if initiator
@@ -534,7 +488,7 @@
       
       // ==================== PHOTO CAPTURE ====================
       photoBtn.addEventListener('click', () => {
-        if (!isConnected && !remoteStreamReceived) {
+        if (!isConnected) {
           alert('Please wait for partner to connect!');
           return;
         }
@@ -544,27 +498,22 @@
           return;
         }
         
-        // Create canvas
         const canvas = document.createElement('canvas');
         canvas.width = 600;
         canvas.height = 800;
         const ctx = canvas.getContext('2d');
         
-        // Draw both videos
         ctx.drawImage(localVideo, 0, 0, 300, 800);
         ctx.drawImage(remoteVideo, 300, 0, 300, 800);
         
-        // Add frame
         ctx.strokeStyle = '#ff4d6d';
         ctx.lineWidth = 8;
         ctx.strokeRect(0, 0, canvas.width, canvas.height);
         
-        // Add photo number
         ctx.fillStyle = '#ff4d6d';
         ctx.font = 'bold 30px Arial';
         ctx.fillText(`#${photos.length + 1}`, 20, 70);
         
-        // Add date
         const date = new Date();
         ctx.font = '16px Arial';
         ctx.fillStyle = 'white';
@@ -580,24 +529,19 @@
       });
       
       function generatePhotoStrip() {
-        // Hide videos, show strip
         document.querySelector('.videos').style.display = 'none';
         photoBtn.style.display = 'none';
         photoStrip.style.display = 'block';
         resetBtn.style.display = 'inline-block';
-        tapOverlay.style.display = 'none';
         
-        // Create strip canvas
         const stripCanvas = document.createElement('canvas');
         stripCanvas.width = 300;
         stripCanvas.height = 400 * photos.length;
         const ctx = stripCanvas.getContext('2d');
         
-        // White background
         ctx.fillStyle = 'white';
         ctx.fillRect(0, 0, stripCanvas.width, stripCanvas.height);
         
-        // Add each photo
         let loaded = 0;
         photos.forEach((photo, index) => {
           const img = new Image();
@@ -606,16 +550,13 @@
             loaded++;
             
             if (loaded === photos.length) {
-              // Add vintage effect
               ctx.fillStyle = 'rgba(255, 77, 109, 0.05)';
               ctx.fillRect(0, 0, stripCanvas.width, stripCanvas.height);
               
-              // Add border
               ctx.strokeStyle = '#ff4d6d';
               ctx.lineWidth = 3;
               ctx.strokeRect(0, 0, stripCanvas.width, stripCanvas.height);
               
-              // Display strip
               const stripImg = document.createElement('img');
               stripImg.src = stripCanvas.toDataURL('image/jpeg', 0.9);
               stripImg.className = 'strip-image';
@@ -623,7 +564,6 @@
               stripContainer.innerHTML = '';
               stripContainer.appendChild(stripImg);
               
-              // Download button
               const downloadBtn = document.createElement('button');
               downloadBtn.innerText = '💾 Download Strip';
               downloadBtn.className = 'button';
@@ -651,7 +591,6 @@
         photoBtn.disabled = !isConnected;
       });
       
-      // Cleanup
       window.addEventListener('beforeunload', () => {
         if (peerConnection) {
           peerConnection.close();
