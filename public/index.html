@@ -206,6 +206,20 @@
   <script>
     // ==================== INITIALIZATION ====================
     document.addEventListener('DOMContentLoaded', async () => {
+      
+      // Fix for iPhone - unmute remote video on first interaction
+      const enableAudioOnInteraction = () => {
+        if (remoteVideo.srcObject) {
+          remoteVideo.muted = false;
+          remoteVideo.play().catch(e => log(`Play after interaction: ${e.message}`));
+        }
+        document.removeEventListener('click', enableAudioOnInteraction);
+        document.removeEventListener('touchstart', enableAudioOnInteraction);
+      };
+
+      document.addEventListener('click', enableAudioOnInteraction, { once: true });
+      document.addEventListener('touchstart', enableAudioOnInteraction, { once: true });
+      
       // Get room ID from URL
       const roomId = window.location.pathname.split('/room/')[1];
       document.getElementById('roomId').innerText = roomId;
@@ -402,14 +416,40 @@
           log('✅ ONTRACK: Received remote video!');
           if (event.streams && event.streams[0]) {
             remoteVideo.srcObject = event.streams[0];
+            
+            // For Safari/iPhone - wait for user interaction
+            const playVideo = () => {
+              remoteVideo.play()
+                .then(() => {
+                  log('✅ Remote video playing!');
+                  isConnected = true;
+                  status.innerText = '💘 Connected! Ready to take photos!';
+                  photoBtn.disabled = false;
+                  
+                  // Remove listeners after successful play
+                  document.removeEventListener('click', playVideo);
+                  document.removeEventListener('touchstart', playVideo);
+                })
+                .catch(e => log(`⚠️ Play error: ${e.message}`));
+            };
+            
+            // Try to play immediately (works on Chrome)
             remoteVideo.play()
               .then(() => {
-                log('✅ Remote video playing!');
+                log('✅ Remote video playing immediately!');
                 isConnected = true;
                 status.innerText = '💘 Connected! Ready to take photos!';
                 photoBtn.disabled = false;
               })
-              .catch(e => log(`⚠️ Play error: ${e.message}`));
+              .catch(() => {
+                // Safari/iPhone - wait for click/tap
+                log('⚠️ Autoplay blocked - waiting for user tap');
+                status.innerText = '👆 Tap the screen to start video';
+                
+                // Add one-time event listeners
+                document.addEventListener('click', playVideo, { once: true });
+                document.addEventListener('touchstart', playVideo, { once: true });
+              });
           }
         };
         
