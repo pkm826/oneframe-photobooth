@@ -161,6 +161,30 @@
       font-size: 1.1em;
       margin: 10px 0;
     }
+
+    .tap-message {
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      background: rgba(255,77,109,0.95);
+      color: white;
+      padding: 20px 40px;
+      border-radius: 50px;
+      font-size: 1.5em;
+      font-weight: bold;
+      border: 3px solid white;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+      z-index: 1000;
+      animation: pulse 2s infinite;
+      cursor: pointer;
+    }
+
+    @keyframes pulse {
+      0% { transform: translate(-50%, -50%) scale(1); }
+      50% { transform: translate(-50%, -50%) scale(1.05); }
+      100% { transform: translate(-50%, -50%) scale(1); }
+    }
   </style>
 </head>
 <body>
@@ -183,9 +207,13 @@
         <div class="label">📱 You</div>
       </div>
       <div class="video-wrapper">
-        <video id="remoteVideo" autoplay playsinline></video>
+        <video id="remoteVideo" autoplay playsinline muted></video>
         <div class="label">💝 Partner</div>
       </div>
+    </div>
+    
+    <div id="tapOverlay" style="display: none;" class="tap-message">
+      👆 TAP TO START VIDEO
     </div>
     
     <div>
@@ -206,20 +234,6 @@
   <script>
     // ==================== INITIALIZATION ====================
     document.addEventListener('DOMContentLoaded', async () => {
-      
-      // Fix for iPhone - unmute remote video on first interaction
-      const enableAudioOnInteraction = () => {
-        if (remoteVideo.srcObject) {
-          remoteVideo.muted = false;
-          remoteVideo.play().catch(e => log(`Play after interaction: ${e.message}`));
-        }
-        document.removeEventListener('click', enableAudioOnInteraction);
-        document.removeEventListener('touchstart', enableAudioOnInteraction);
-      };
-
-      document.addEventListener('click', enableAudioOnInteraction, { once: true });
-      document.addEventListener('touchstart', enableAudioOnInteraction, { once: true });
-      
       // Get room ID from URL
       const roomId = window.location.pathname.split('/room/')[1];
       document.getElementById('roomId').innerText = roomId;
@@ -235,6 +249,7 @@
       const stripContainer = document.getElementById('stripContainer');
       const debugPanel = document.getElementById('debugPanel');
       const debugBtn = document.getElementById('debugBtn');
+      const tapOverlay = document.getElementById('tapOverlay');
       
       // State
       let localStream = null;
@@ -243,6 +258,7 @@
       let photos = [];
       let debugMode = false;
       let isInitiator = false;
+      let remoteStreamReceived = false;
       
       // ==================== DEBUG LOGGING ====================
       function log(...args) {
@@ -308,9 +324,11 @@
       socket.on('partner-left', () => {
         log('👋 Partner left the room');
         isConnected = false;
+        remoteStreamReceived = false;
         status.innerText = '👋 Partner left. Waiting for new partner...';
         photoBtn.disabled = true;
         remoteVideo.srcObject = null;
+        tapOverlay.style.display = 'none';
         
         if (peerConnection) {
           peerConnection.close();
@@ -379,16 +397,33 @@
         return;
       }
       
-      // ==================== WEBRTC SETUP - FINAL FIX ====================
+      // ==================== TAP TO PLAY HANDLER ====================
+      function startRemoteVideo() {
+        if (remoteVideo.srcObject) {
+          remoteVideo.play()
+            .then(() => {
+              log('✅ Remote video started by user tap');
+              tapOverlay.style.display = 'none';
+              isConnected = true;
+              status.innerText = '💘 Connected! Ready to take photos!';
+              photoBtn.disabled = false;
+            })
+            .catch(e => log(`⚠️ Tap play error: ${e.message}`));
+        }
+      }
+
+      tapOverlay.addEventListener('click', startRemoteVideo);
+      tapOverlay.addEventListener('touchstart', startRemoteVideo);
+      
+      // ==================== WEBRTC SETUP ====================
       function createPeerConnection(shouldCreateOffer = false) {
         if (peerConnection) {
           peerConnection.close();
           peerConnection = null;
         }
         
-        log('🔧 Creating peer connection with TCP-only TURN...');
+        log('🔧 Creating peer connection with TURN...');
         
-        // SIMPLE CONFIGURATION - TCP ONLY, RELAY ONLY
         const configuration = {
           iceServers: [
             {
@@ -414,26 +449,12 @@
         // Handle remote stream
         peerConnection.ontrack = (event) => {
           log('✅ ONTRACK: Received remote video!');
+          remoteStreamReceived = true;
+          
           if (event.streams && event.streams[0]) {
             remoteVideo.srcObject = event.streams[0];
             
-            // For Safari/iPhone - wait for user interaction
-            const playVideo = () => {
-              remoteVideo.play()
-                .then(() => {
-                  log('✅ Remote video playing!');
-                  isConnected = true;
-                  status.innerText = '💘 Connected! Ready to take photos!';
-                  photoBtn.disabled = false;
-                  
-                  // Remove listeners after successful play
-                  document.removeEventListener('click', playVideo);
-                  document.removeEventListener('touchstart', playVideo);
-                })
-                .catch(e => log(`⚠️ Play error: ${e.message}`));
-            };
-            
-            // Try to play immediately (works on Chrome)
+            // Try to play immediately
             remoteVideo.play()
               .then(() => {
                 log('✅ Remote video playing immediately!');
@@ -442,13 +463,10 @@
                 photoBtn.disabled = false;
               })
               .catch(() => {
-                // Safari/iPhone - wait for click/tap
-                log('⚠️ Autoplay blocked - waiting for user tap');
-                status.innerText = '👆 Tap the screen to start video';
-                
-                // Add one-time event listeners
-                document.addEventListener('click', playVideo, { once: true });
-                document.addEventListener('touchstart', playVideo, { once: true });
+                // Show tap overlay for Safari/iPhone
+                log('⚠️ Autoplay blocked - showing tap overlay');
+                status.innerText = '👆 Tap to start video';
+                tapOverlay.style.display = 'block';
               });
           }
         };
@@ -474,9 +492,9 @@
           
           if (state === 'connected' || state === 'completed') {
             log('✅ WebRTC connected via TURN relay!');
-            isConnected = true;
-            photoBtn.disabled = false;
-            status.innerText = '💘 Connected! Ready to take photos!';
+            if (!remoteStreamReceived) {
+              status.innerText = '⏳ Waiting for video stream...';
+            }
           } else if (state === 'failed') {
             log('❌ ICE failed - retrying...');
             status.innerText = '⚠️ Connection failed. Retrying...';
@@ -485,21 +503,14 @@
                 peerConnection.restartIce();
               }
             }, 3000);
-          } else if (state === 'disconnected') {
-            log('⚠️ ICE disconnected');
           }
-        };
-        
-        // Monitor gathering state
-        peerConnection.onicegatheringstatechange = () => {
-          log(`🔄 ICE gathering: ${peerConnection.iceGatheringState}`);
         };
         
         // Create offer if initiator
         if (shouldCreateOffer) {
           setTimeout(async () => {
             try {
-              log('📞 Creating offer with TURN forcing...');
+              log('📞 Creating offer...');
               const offer = await peerConnection.createOffer({
                 offerToReceiveVideo: true,
                 offerToReceiveAudio: false
@@ -523,7 +534,7 @@
       
       // ==================== PHOTO CAPTURE ====================
       photoBtn.addEventListener('click', () => {
-        if (!isConnected) {
+        if (!isConnected && !remoteStreamReceived) {
           alert('Please wait for partner to connect!');
           return;
         }
@@ -574,6 +585,7 @@
         photoBtn.style.display = 'none';
         photoStrip.style.display = 'block';
         resetBtn.style.display = 'inline-block';
+        tapOverlay.style.display = 'none';
         
         // Create strip canvas
         const stripCanvas = document.createElement('canvas');
